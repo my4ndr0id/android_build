@@ -1,0 +1,2 @@
+Codeaurora's platform/build
+manifest M8625SSNSKMLYA1050
