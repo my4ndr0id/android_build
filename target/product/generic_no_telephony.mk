@@ -31,16 +31,15 @@ PRODUCT_PACKAGES := \
     Exchange \
     Gallery2 \
     LatinIME \
-    Launcher2 \
-    Music \
-    MusicFX \
+    Trebuchet \
+    Apollo \
+    DSPManager \
     Provision \
     Phone \
-    QuickSearchBox \
+    GoogleQuickSearchBox \
     Settings \
     Sync \
     SystemUI \
-    Updater \
     CalendarProvider \
     SyncProvider \
     bluetooth-health \
