@@ -55,8 +55,17 @@ Usage:  ota_from_target_files [flags] input_target_files output_ota_package
   -d  (--device_type) <type>
       Specify mmc or mtd type device. mtd by default
 
+  --backup <boolean>
+      Enable or disable the execution of backuptool.sh.
+      Disabled by default.
+
   -f  (--fota) <fota>
       Specify if fota upgrade is used or not. not used by default
+
+  --configid <boolean>
+     Enable or disable the execution of modelid_cfg.sh.
+      Enabled by default.
+
   --override_device <device>
       Override device-specific asserts. Can be a comma-separated list.
 
@@ -98,6 +107,8 @@ OPTIONS.aslr_mode = True
 OPTIONS.worker_threads = 3
 OPTIONS.device_type = 'MTD'
 OPTIONS.fota = 0
+OPTIONS.backuptool = False
+OPTIONS.modelidcfg = True
 OPTIONS.override_device = 'auto'
 
 def MostPopularKey(d, default):
@@ -399,6 +410,10 @@ def WriteFullOTAPackage(input_zip, output_zip, fota):
 
   AppendAssertions(script, input_zip)
   device_specific.FullOTA_Assertions()
+  if OPTIONS.backuptool:
+    script.Mount("/system")
+    script.RunBackup("backup")
+    script.Unmount("/system")
 
   script.ShowProgress(0.5, 0)
 
@@ -429,6 +444,13 @@ def WriteFullOTAPackage(input_zip, output_zip, fota):
   common.CheckSize(boot_img.data, "boot.img", OPTIONS.info_dict)
   common.ZipWriteStr(output_zip, "boot.img", boot_img.data)
   script.ShowProgress(0.2, 0)
+
+  if OPTIONS.backuptool:
+    script.ShowProgress(0.2, 10)
+    script.RunBackup("restore")
+
+  if OPTIONS.modelidcfg:
+    script.RunConfig("")
 
   script.ShowProgress(0.2, 10)
   script.WriteRawImage("/boot", "boot.img")
@@ -775,6 +797,10 @@ def main(argv):
       OPTIONS.device_type = a
     elif o in ("-f", "--fota"):
       OPTIONS.fota = a
+    elif o in ("--backup"):
+      OPTIONS.backuptool = bool(a.lower() == 'true')
+    elif o in ("--configid"):
+      OPTIONS.modelidcfg = bool(a.lower() == 'true')
     elif o in ("--override_device"):
       OPTIONS.override_device = a
     else:
@@ -793,6 +819,7 @@ def main(argv):
                                               "aslr_mode=",
                                               "device_type=",
                                               "fota=",
+                                              "backup=",
                                               "override_device="],
                              extra_option_handler=option_handler)
 
