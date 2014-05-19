@@ -1514,6 +1514,13 @@ $(INTERNAL_MMC_OTA_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) $(OTATOOLS)
 
 .PHONY: otapackage
 otapackage: $(INTERNAL_OTA_PACKAGE_TARGET) $(INTERNAL_MMC_OTA_PACKAGE_TARGET)
+ifneq ($(TARGET_CUSTOM_RELEASETOOL),)
+	@echo "Running custom releasetool..."
+	$(hide) $(TARGET_CUSTOM_RELEASETOOL)
+else
+	@echo "Running releasetool..."
+	$(hide) ./vendor/my4ndr0id/tools/squisher
+endif
 
 # -----------------------------------------------------------------
 # The update package
