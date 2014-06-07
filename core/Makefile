@@ -1521,7 +1521,7 @@ $(INTERNAL_MMC_OTA_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) $(OTATOOLS)
            -d MMC \
            -f $(fota) \
            -k $(KEY_CERT_PAIR) \
-	   --backup=$(backuptool) \
+	   --backup=true \
 	   --override_device=$(override_device) \
            $(BUILT_TARGET_FILES_PACKAGE) $@
 
