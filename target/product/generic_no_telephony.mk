@@ -31,9 +31,6 @@ PRODUCT_PACKAGES := \
     Exchange \
     Gallery2 \
     LatinIME \
-    Trebuchet \
-    Apollo \
-    DSPManager \
     Provision \
     Phone \
     GoogleQuickSearchBox \
