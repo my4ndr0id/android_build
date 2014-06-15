@@ -39,12 +39,13 @@ endif
 
 # check for broken versions of make
 ifeq (0,$(shell expr $$(echo $(MAKE_VERSION) | sed "s/[^0-9\.].*//") = 3.81))
+ifeq (0,$(shell expr $$(echo $(MAKE_VERSION) | sed "s/[^0-9\.].*//") = 3.82))
 $(warning ********************************************************************************)
 $(warning *  You are using version $(MAKE_VERSION) of make.)
-$(warning *  Android can only be built by version 3.81.)
+$(warning *  Android can only be built by versions 3.81 and 3.82.)
 $(warning *  see http://source.android.com/source/download.html)
 $(warning ********************************************************************************)
-$(error stopping)
+endif
 endif
 
 TOP := .
@@ -119,7 +120,7 @@ java_version :=
 endif
 ifeq ($(strip $(java_version)),)
 $(info ************************************************************)
-$(info You are attempting to build with the incorrect version)
+$(info You are attempting to build with an unsupported version)
 $(info of java.)
 $(info $(space))
 $(info Your version is: $(shell java -version 2>&1 | head -n 1).)
@@ -128,7 +129,6 @@ $(info $(space))
 $(info Please follow the machine setup instructions at)
 $(info $(space)$(space)$(space)$(space)http://source.android.com/source/download.html)
 $(info ************************************************************)
-$(error stop)
 endif
 
 # Check for the correct version of javac
@@ -332,16 +332,6 @@ ADDITIONAL_BUILD_PROPERTIES += net.bt.name=Android
 # the cause of ANRs in the content process
 ADDITIONAL_BUILD_PROPERTIES += dalvik.vm.stack-trace-file=/data/anr/traces.txt
 
-# Add e2fsck if using ext2/3/4 file system on target
-BUILD_E2FSCK := true
-ifneq ($(TARGET_USERIMAGES_USE_EXT2),true)
-  ifneq ($(TARGET_USERIMAGES_USE_EXT3),true)
-    ifneq ($(TARGET_USERIMAGES_USE_EXT4),true)
-      BUILD_E2FSCK := false
-    endif
-  endif
-endif
-
 # ------------------------------------------------------------
 # Define a function that, given a list of module tags, returns
 # non-empty if that module should be installed in /system.
@@ -488,11 +478,6 @@ subdirs := \
 	external/mksh \
 	external/yaffs2 \
 	external/zlib
-
-ifeq ($(BUILD_E2FSCK),true)
-    subdirs += external/e2fsprogs
-endif
-
 else	# !BUILD_TINY_ANDROID
 
 #
@@ -676,7 +661,6 @@ ifdef is_sdk_build
                       $(TARGET_OUT_INTERMEDIATES)/% \
                       $(TARGET_OUT)/% \
                       $(TARGET_OUT_DATA)/%, \
-                      $(TARGET_OUT_PERSIST)/%, \
                               $(sort $(call get-tagged-modules,gnu)))
   $(info Removing from sdk:)$(foreach d,$(target_gnu_MODULES),$(info : $(d)))
   modules_to_install := \
@@ -760,28 +744,11 @@ endif
 .PHONY: userdatatarball
 userdatatarball: $(INSTALLED_USERDATATARBALL_TARGET)
 
-.PHONY: persistimage
-persistimage: $(INSTALLED_PERSISTIMAGE_TARGET)
-
-.PHONY: persisttarball
-persisttarball: $(INSTALLED_PERSISTTARBALL_TARGET)
-
 .PHONY: bootimage
 bootimage: $(INSTALLED_BOOTIMAGE_TARGET)
 
-.PHONY: cacheimage
-cacheimage: $(INSTALLED_CACHEIMAGE_TARGET)
-
-.PHONY: tombstonesimage
-tombstonesimage: $(INSTALLED_TOMBSTONESIMAGE_TARGET)
-
-.PHONY: aboot
-aboot: $(INSTALLED_BOOTLOADER_TARGET)
-
 ifeq ($(BUILD_TINY_ANDROID), true)
 INSTALLED_RECOVERYIMAGE_TARGET :=
-INTERNAL_OTA_PACKAGE_TARGET :=
-INTERNAL_MMC_OTA_PACKAGE_TARGET :=
 endif
 
 # Build files and then package it into the rom formats
@@ -791,11 +758,6 @@ droidcore: files \
 	$(INSTALLED_BOOTIMAGE_TARGET) \
 	$(INSTALLED_RECOVERYIMAGE_TARGET) \
 	$(INSTALLED_USERDATAIMAGE_TARGET) \
-	$(INSTALLED_PERSISTIMAGE_TARGET) \
-	$(INSTALLED_CACHEIMAGE_TARGET) \
-	$(INSTALLED_TOMBSTONESIMAGE_TARGET) \
-	$(INTERNAL_OTA_PACKAGE_TARGET) \
-	$(INTERNAL_MMC_OTA_PACKAGE_TARGET) \
 	$(INSTALLED_FILES_FILE)
 
 # dist_files only for putting your library into the dist directory with a full build.

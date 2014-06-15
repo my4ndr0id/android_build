@@ -78,7 +78,7 @@ def CloseInheritedPipes():
       pass
 
 
-def LoadInfoDict(zip, type):
+def LoadInfoDict(zip):
   """Read and parse the META/misc_info.txt key/value pairs from the
   input target files and return a dict."""
 
@@ -141,18 +141,15 @@ def LoadInfoDict(zip, type):
   makeint("recovery_size")
   makeint("boot_size")
 
-  d["fstab"] = LoadRecoveryFSTab(zip, type)
+  d["fstab"] = LoadRecoveryFSTab(zip)
   return d
 
-def LoadRecoveryFSTab(zip, type):
+def LoadRecoveryFSTab(zip):
   class Partition(object):
     pass
 
   try:
-    if type == 'MTD':
-        data = zip.read("RECOVERY/RAMDISK/etc/recovery.fstab")
-    elif type == 'MMC':
-        data = zip.read("RECOVERY/RAMDISK/etc/recovery_mmc.fstab")
+    data = zip.read("RECOVERY/RAMDISK/etc/recovery.fstab")
   except KeyError:
     print "Warning: could not find RECOVERY/RAMDISK/etc/recovery.fstab in %s." % zip
     data = ""
@@ -162,7 +159,7 @@ def LoadRecoveryFSTab(zip, type):
     line = line.strip()
     if not line or line.startswith("#"): continue
     pieces = line.split()
-    if not (3 <= len(pieces) <= 4):
+    if not (3 <= len(pieces) <= 7):
       raise ValueError("malformed recovery.fstab line: \"%s\"" % (line,))
 
     p = Partition()
@@ -171,7 +168,7 @@ def LoadRecoveryFSTab(zip, type):
     p.device = pieces[2]
     p.length = 0
     options = None
-    if len(pieces) >= 4:
+    if len(pieces) >= 4 and pieces[3] != 'NULL':
       if pieces[3].startswith("/"):
         p.device2 = pieces[3]
         if len(pieces) >= 5:
@@ -221,75 +218,46 @@ def BuildBootableImage(sourcedir):
   assert p1.returncode == 0, "mkbootfs of %s ramdisk failed" % (targetname,)
   assert p2.returncode == 0, "minigzip of %s ramdisk failed" % (targetname,)
 
-  cmd = ["mkbootimg", "--kernel", os.path.join(sourcedir, "kernel")]
-
-  fn = os.path.join(sourcedir, "cmdline")
+  """check if uboot is requested"""
+  fn = os.path.join(sourcedir, "ubootargs")
   if os.access(fn, os.F_OK):
-    cmd.append("--cmdline")
-    cmd.append(open(fn).read().rstrip("\n"))
+    cmd = ["mkimage"]
+    for argument in open(fn).read().rstrip("\n").split(" "):
+      cmd.append(argument)
+    cmd.append("-d")
+    cmd.append(os.path.join(sourcedir, "kernel")+":"+ramdisk_img.name)
+    cmd.append(img.name)
 
-  fn = os.path.join(sourcedir, "base")
-  if os.access(fn, os.F_OK):
-    cmd.append("--base")
-    cmd.append(open(fn).read().rstrip("\n"))
-
-  fn = os.path.join(sourcedir, "pagesize")
-  if os.access(fn, os.F_OK):
-    cmd.append("--pagesize")
-    cmd.append(open(fn).read().rstrip("\n"))
-    pagesize = open(fn).read().rstrip("\n")
   else:
-    pagesize = 2048
-  fn = os.path.join(sourcedir,"kernel_size")
-  if os.access(fn, os.F_OK):
-      cmd.append("--ramdisk_offset")
-      cmd.append(open(fn).read().rstrip("\n"))
-  fn = os.path.join(sourcedir,"compressed_kernel")
-  if os.access(fn, os.F_OK):
-      cmd.append("-z")
+    cmd = ["mkbootimg", "--kernel", os.path.join(sourcedir, "kernel")]
 
-  cmd.extend(["--ramdisk", ramdisk_img.name,
-              "--output", img.name])
+    fn = os.path.join(sourcedir, "cmdline")
+    if os.access(fn, os.F_OK):
+      cmd.append("--cmdline")
+      cmd.append(open(fn).read().rstrip("\n"))
+
+    fn = os.path.join(sourcedir, "base")
+    if os.access(fn, os.F_OK):
+      cmd.append("--base")
+      cmd.append(open(fn).read().rstrip("\n"))
+
+    fn = os.path.join(sourcedir, "pagesize")
+    if os.access(fn, os.F_OK):
+      cmd.append("--pagesize")
+      cmd.append(open(fn).read().rstrip("\n"))
+
+    fn = os.path.join(sourcedir, "ramdiskaddr")
+    if os.access(fn, os.F_OK):
+      cmd.append("--ramdiskaddr")
+      cmd.append(open(fn).read().rstrip("\n"))
+
+    cmd.extend(["--ramdisk", ramdisk_img.name,
+                "--output", img.name])
 
   p = Run(cmd, stdout=subprocess.PIPE)
   p.communicate()
   assert p.returncode == 0, "mkbootimg of %s image failed" % (
       os.path.basename(sourcedir),)
-
-
-  fn = os.path.join(sourcedir, "sign-key")
-  if os.access(fn, os.F_OK):
-    # Signature key found
-    # Get SHA256 of raw image
-    sha256 = tempfile.NamedTemporaryFile()
-    p = Run(["openssl", "dgst", "-sha256", "-binary", img.name],
-            stdout=sha256)
-    p.communicate()
-    # Create signature
-    signature = tempfile.NamedTemporaryFile()
-    p = Run(["openssl", "rsautl", "-sign", "-in", sha256.name, "-inkey",
-            os.path.join(sourcedir, "sign-key"), "-out", signature.name],
-            stdout=subprocess.PIPE)
-    p.communicate()
-    # Create padding of pagesize
-    signature_pad = tempfile.NamedTemporaryFile()
-    p = Run(["dd", "if=/dev/zero", "of="+signature_pad.name, "bs="+pagesize, "count=1"],
-            stdout=subprocess.PIPE)
-    p.communicate()
-    # Add Signature.
-    p = Run(["dd", "if="+signature.name, "of="+signature_pad.name, "conv=notrunc"],
-            stdout=subprocess.PIPE)
-    p.communicate()
-    signedimg = tempfile.NamedTemporaryFile()
-    p = Run(["cat", img.name, signature_pad.name],
-            stdout=signedimg)
-    p.communicate()
-    img.close()
-    img = signedimg
-    # Close all files
-    sha256.close()
-    signature.close()
-    signature_pad.close()
 
   img.seek(os.SEEK_SET, 0)
   data = img.read()
@@ -403,8 +371,14 @@ def SignFile(input_name, output_name, key, password, align=None,
   else:
     sign_name = output_name
 
-  cmd = ["java", "-Xmx2048m", "-jar",
+  check = (sys.maxsize > 2**32)
+  if check is True:
+    cmd = ["java", "-Xmx2048m", "-jar",
            os.path.join(OPTIONS.search_path, "framework", "signapk.jar")]
+  else:
+    cmd = ["java", "-Xmx1024m", "-jar",
+           os.path.join(OPTIONS.search_path, "framework", "signapk.jar")]
+
   if whole_file:
     cmd.append("-w")
   cmd.extend([key + ".x509.pem", key + ".pk8",
@@ -860,8 +834,14 @@ def ComputeDifferences(diffs):
 
 
 # map recovery.fstab's fs_types to mount/format "partition types"
-PARTITION_TYPES = { "yaffs2": "MTD", "mtd": "MTD",
-                    "ext4": "EMMC", "emmc": "EMMC" }
+PARTITION_TYPES = { "bml": "BML",
+                    "ext2": "EMMC",
+                    "ext3": "EMMC",
+                    "ext4": "EMMC",
+                    "emmc": "EMMC",
+                    "mtd": "MTD",
+                    "yaffs2": "MTD",
+                    "vfat": "EMMC" }
 
 def GetTypeAndDevice(mount_point, info):
   fstab = info["fstab"]

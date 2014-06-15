@@ -691,7 +691,7 @@ define _get-package-overrides
 endef
 
 define get-package-overrides
-$(strip $(sort $(call _get-package-overrides,$(1))))
+$(sort $(strip $(call _get-package-overrides,$(1))))
 endef
 
 ###########################################################
@@ -1292,13 +1292,6 @@ endef
 ifneq ($(HOST_CUSTOM_LD_COMMAND),true)
 define transform-host-o-to-executable-inner
 $(hide) $(PRIVATE_CXX) \
-	-Wl,-rpath-link=$(HOST_OUT_INTERMEDIATE_LIBRARIES) \
-	-Wl,-rpath,\$$ORIGIN/../lib \
-	$(HOST_GLOBAL_LD_DIRS) \
-	$(PRIVATE_LDFLAGS) \
-	$(if $(PRIVATE_NO_DEFAULT_COMPILER_FLAGS),, \
-		$(HOST_GLOBAL_LDFLAGS) \
-	) \
 	$(PRIVATE_ALL_OBJECTS) \
 	-Wl,--whole-archive \
 	$(call normalize-host-libraries,$(PRIVATE_ALL_WHOLE_STATIC_LIBRARIES)) \
@@ -1307,6 +1300,13 @@ $(hide) $(PRIVATE_CXX) \
 	$(call normalize-host-libraries,$(PRIVATE_ALL_STATIC_LIBRARIES)) \
 	$(if $(PRIVATE_GROUP_STATIC_LIBRARIES),-Wl$(comma)--end-group) \
 	$(call normalize-host-libraries,$(PRIVATE_ALL_SHARED_LIBRARIES)) \
+	-Wl,-rpath-link=$(HOST_OUT_INTERMEDIATE_LIBRARIES) \
+	-Wl,-rpath,\$$ORIGIN/../lib \
+	$(HOST_GLOBAL_LD_DIRS) \
+	$(PRIVATE_LDFLAGS) \
+	$(if $(PRIVATE_NO_DEFAULT_COMPILER_FLAGS),, \
+		$(HOST_GLOBAL_LDFLAGS) \
+	) \
 	-o $@ \
 	$(PRIVATE_LDLIBS)
 endef
@@ -1525,7 +1525,7 @@ define transform-classes.jar-to-dex
 @echo "target Dex: $(PRIVATE_MODULE)"
 @mkdir -p $(dir $@)
 $(hide) $(DX) \
-    $(if $(findstring windows,$(HOST_OS)),,-JXms16M -JXmx2048M) \
+    $(if $(findstring windows,$(HOST_OS)),,-JXms16M -JXmx1536M) \
     --dex --output=$@ \
     $(incremental_dex) \
     $(if $(NO_OPTIMIZE_DX), \
@@ -1845,9 +1845,9 @@ endif
 # spare area for each page).
 # $(1): the partition data size
 define image-size-from-data-size
-$(strip $(eval _isfds_value := $$(shell echo $$$$(($(1) / $(BOARD_KERNEL_PAGESIZE) * \
-  ($(BOARD_KERNEL_PAGESIZE)+$(BOARD_KERNEL_SPARESIZE))))))\
-$(if $(filter 0, $(_isfds_value)),$(shell echo $$(($(BOARD_KERNEL_PAGESIZE)+$(BOARD_KERNEL_SPARESIZE)))),$(_isfds_value))\
+$(strip $(eval _isfds_value := $$(shell echo $$$$(($(1) / $(BOARD_NAND_PAGE_SIZE) * \
+  ($(BOARD_NAND_PAGE_SIZE)+$(BOARD_NAND_SPARE_SIZE))))))\
+$(if $(filter 0, $(_isfds_value)),$(shell echo $$(($(BOARD_NAND_PAGE_SIZE)+$(BOARD_NAND_SPARE_SIZE)))),$(_isfds_value))\
 $(eval _isfds_value :=))
 endef
 

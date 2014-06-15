@@ -31,12 +31,15 @@ PRODUCT_PACKAGES := \
     Exchange \
     Gallery2 \
     LatinIME \
+    Launcher2 \
+    Music \
     Provision \
     Phone \
-    GoogleQuickSearchBox \
+    QuickSearchBox \
     Settings \
     Sync \
     SystemUI \
+    Updater \
     CalendarProvider \
     SyncProvider \
     bluetooth-health \
@@ -47,10 +50,7 @@ PRODUCT_PACKAGES += \
     icu.dat
 
 PRODUCT_PACKAGES += \
-    librs_jni \
-    libvideoeditor_jni \
-    libvideoeditorplayer \
-    libvideoeditor_core
+    librs_jni
 
 PRODUCT_PACKAGES += \
     audio.primary.default \

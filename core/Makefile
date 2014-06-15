@@ -25,7 +25,6 @@ unique_product_copy_files_destinations :=
 $(foreach cf,$(PRODUCT_COPY_FILES), \
     $(eval _src := $(call word-colon,1,$(cf))) \
     $(eval _dest := $(call word-colon,2,$(cf))) \
-    $(call check-product-copy-files,$(cf)) \
     $(if $(filter $(unique_product_copy_files_destinations),$(_dest)),, \
         $(eval _fulldest := $(call append-path,$(PRODUCT_OUT),$(_dest))) \
         $(eval $(call copy-one-file,$(_src),$(_fulldest))) \
@@ -350,30 +349,6 @@ $(INSTALLED_RAMDISK_TARGET): $(MKBOOTFS) $(INTERNAL_RAMDISK_FILES) | $(MINIGZIP)
 	$(call pretty,"Target ram disk: $@")
 	$(hide) $(MKBOOTFS) $(TARGET_ROOT_OUT) | $(MINIGZIP) > $@
 
-TARGET_SHA_TYPE := $(strip $(TARGET_SHA_TYPE))
-ifeq ($(TARGET_BOOTIMG_SIGNED),true)
-
-ifndef TARGET_SHA_TYPE
-  TARGET_SHA_TYPE := sha256
-endif
-
-# $(1): Image name
-# $(2): Image arguments
-define build-boot-image
-	$(hide) $(MKBOOTIMG) $(2) --output $(1).nonsecure
-	$(hide) openssl dgst -$(TARGET_SHA_TYPE)  -binary $(1).nonsecure > $(1).$(TARGET_SHA_TYPE)
-	$(hide) openssl rsautl -sign -in $(1).$(TARGET_SHA_TYPE) -inkey $(PRODUCT_PRIVATE_KEY) -out $(1).sig
-	$(hide) dd if=/dev/zero of=$(1).sig.padded bs=$(BOARD_KERNEL_PAGESIZE) count=1
-	$(hide) dd if=$(1).sig of=$(1).sig.padded conv=notrunc
-	$(hide) cat $(1).nonsecure $(1).sig.padded > $(1)
-	$(hide) rm -rf $(1).$(TARGET_SHA_TYPE) $(1).sig $(1).sig.padded
-endef
-else
-define build-boot-image
-	$(hide) $(MKBOOTIMG) $(2) --output $(1)
-endef
-endif
-
 ifneq ($(strip $(TARGET_NO_KERNEL)),true)
 
 # -----------------------------------------------------------------
@@ -395,28 +370,17 @@ ifdef BOARD_KERNEL_BASE
   INTERNAL_BOOTIMAGE_ARGS += --base $(BOARD_KERNEL_BASE)
 endif
 
-BOARD_KERNEL_2KPAGESIZE := $(strip $(BOARD_KERNEL_2KPAGESIZE))
-ifdef BOARD_KERNEL_2KPAGESIZE
-  INTERNAL_2K_BOOTIMAGE_ARGS := $(INTERNAL_BOOTIMAGE_ARGS)
-  INTERNAL_2K_BOOTIMAGE_ARGS += --pagesize $(BOARD_KERNEL_2KPAGESIZE)
-endif
-
 BOARD_KERNEL_PAGESIZE := $(strip $(BOARD_KERNEL_PAGESIZE))
 ifdef BOARD_KERNEL_PAGESIZE
   INTERNAL_BOOTIMAGE_ARGS += --pagesize $(BOARD_KERNEL_PAGESIZE)
-else
-  BOARD_KERNEL_PAGESIZE := 2048
+endif
+
+BOARD_FORCE_RAMDISK_ADDRESS := $(strip $(BOARD_FORCE_RAMDISK_ADDRESS))
+ifneq ($(BOARD_FORCE_RAMDISK_ADDRESS),)
+  INTERNAL_BOOTIMAGE_ARGS += --ramdiskaddr $(BOARD_FORCE_RAMDISK_ADDRESS)
 endif
 
 INSTALLED_BOOTIMAGE_TARGET := $(PRODUCT_OUT)/boot.img
-INSTALLED_2K_BOOTIMAGE_TARGET := $(2KPAGENAND_OUT)/boot.2knand.img
-
-ifeq ($(BOARD_SUPPORTS_2KNAND_PAGE),true)
-define install-2knand-boot-image
-    $(hide) $(call build-boot-image,$(INSTALLED_2K_BOOTIMAGE_TARGET),$(INTERNAL_2K_BOOTIMAGE_ARGS) --ramdisk_offset $(call get-kernel-size) $(MKBOOTIMG_COMPRESSED))
-    $(hide) $(call assert-max-image-size,$(INSTALLED_2K_BOOTIMAGE_TARGET),$(BOARD_BOOTIMAGE_PARTITION_SIZE),raw)
-endef
-endif
 
 ifeq ($(TARGET_BOOTIMAGE_USE_EXT2),true)
 tmp_dir_for_image := $(call intermediates-dir-for,EXECUTABLES,boot_img)/bootimg
@@ -426,27 +390,14 @@ $(INSTALLED_BOOTIMAGE_TARGET): $(MKEXT2IMG) $(INTERNAL_BOOTIMAGE_FILES)
 	$(call pretty,"Target boot image: $@")
 	$(hide) $(MKEXT2BOOTIMG) $(INTERNAL_BOOTIMAGE_ARGS) --output $@
 
-else # TARGET_BOOTIMAGE_USE_EXT2 != true
-
-# Gets the kernel size by subtracting _end from _stext in the System.map file
-# and rounding it off to the upper 4K boundary.
-define get-kernel-size
-  $(shell awk --non-decimal-data '/ _end/ {end="0x" $$1} /_stext/ {beg="0x" $$1}
-                 END {size1=end-beg+4096; size=and(size1,compl(4095));
-                 printf("%#x",size)}' $(KERNEL_OUT)/System.map)
-endef
-
-ifneq ($(TARGET_USES_UNCOMPRESSED_KERNEL),true)
-MKBOOTIMG_COMPRESSED := -z
-endif
+else ifndef BOARD_CUSTOM_BOOTIMG_MK # TARGET_BOOTIMAGE_USE_EXT2 != true
 
 $(INSTALLED_BOOTIMAGE_TARGET): $(MKBOOTIMG) $(INTERNAL_BOOTIMAGE_FILES)
 	$(call pretty,"Target boot image: $@")
-	$(hide) $(call build-boot-image,$@,$(INTERNAL_BOOTIMAGE_ARGS) --ramdisk_offset $(call get-kernel-size) $(MKBOOTIMG_COMPRESSED))
-	$(hide) $(call install-2knand-boot-image)
+	$(hide) $(MKBOOTIMG) $(INTERNAL_BOOTIMAGE_ARGS) --output $@
 	$(hide) $(call assert-max-image-size,$@,$(BOARD_BOOTIMAGE_PARTITION_SIZE),raw)
 
-endif # TARGET_BOOTIMAGE_USE_EXT2
+endif # ifndef BOARD_CUSTOM_BOOTIMG_MK
 
 else	# TARGET_NO_KERNEL
 # HACK: The top-level targets depend on the bootimage.  Not all targets
@@ -656,11 +607,8 @@ ifneq (true,$(TARGET_USERIMAGES_SPARSE_EXT_DISABLED))
   INTERNAL_USERIMAGES_SPARSE_EXT_FLAG := -s
 endif
 
-# Always generate YAFFS2 image in addition to EXT2/3/4
-INTERNAL_USERIMAGES_DEPS := $(MKYAFFS2)
-
 ifeq ($(INTERNAL_USERIMAGES_USE_EXT),true)
-INTERNAL_USERIMAGES_DEPS += $(MKEXTUSERIMG) $(MAKE_EXT4FS)
+INTERNAL_USERIMAGES_DEPS := $(MKEXTUSERIMG) $(MAKE_EXT4FS)
 INTERNAL_USERIMAGES_BINARY_PATHS := $(sort $(dir $(INTERNAL_USERIMAGES_DEPS)))
 
 # $(1): src directory
@@ -670,10 +618,22 @@ INTERNAL_USERIMAGES_BINARY_PATHS := $(sort $(dir $(INTERNAL_USERIMAGES_DEPS)))
 # $(5): size of the partition
 define build-userimage-ext-target
   @mkdir -p $(dir $(2))
-    $(hide) PATH=$(foreach p,$(INTERNAL_USERIMAGES_BINARY_PATHS),$(p):)$(PATH) \
-	  $(MKEXTUSERIMG) -s $(1) $(2).$(4) $(4) $(3) $(5)
+  $(hide) PATH=$(foreach p,$(INTERNAL_USERIMAGES_BINARY_PATHS),$(p):)$$PATH \
+	  $(MKEXTUSERIMG) $(INTERNAL_USERIMAGES_SPARSE_EXT_FLAG) $(1) $(2) $(4) $(3) $(5)
 endef
+else
+INTERNAL_USERIMAGES_DEPS := $(MKYAFFS2)
 endif
+
+# -----------------------------------------------------------------
+# Utility executables
+
+INTERNAL_UTILITY_FILES := $(filter $(PRODUCT_OUT)/utilities/%, \
+	$(foreach module, $(ALL_MODULES), $(ALL_MODULES.$(module).INSTALLED)) \
+	$(ALL_DEFAULT_INSTALLED_MODULES))
+
+.PHONY: utilities
+utilities: $(INTERNAL_UTILITY_FILES)
 
 # -----------------------------------------------------------------
 # Recovery image
@@ -682,19 +642,36 @@ endif
 ifeq (,$(filter true, $(TARGET_NO_KERNEL) $(TARGET_NO_RECOVERY) $(BUILD_TINY_ANDROID)))
 
 INSTALLED_RECOVERYIMAGE_TARGET := $(PRODUCT_OUT)/recovery.img
-INSTALLED_2K_RECOVERYIMAGE_TARGET := $(2KPAGENAND_OUT)/recovery.2knand.img
 
-recovery_initrc := $(call include-path-for, recovery)/etc/init.rc
-recovery_kernel := $(INSTALLED_KERNEL_TARGET) # same as a non-recovery system
+ifneq ($(TARGET_RECOVERY_INITRC),)
+  recovery_initrc := $(TARGET_RECOVERY_INITRC) # Use target specific init.rc
+else
+ifeq ($(BOARD_USES_RECOVERY_CHARGEMODE),true)
+  $(error BOARD_USES_RECOVERY_CHARGEMODE is deprecated. Please see http://bit.ly/opcSJZ on how to properly implement chargemode in recovery. Or just remove the BOARD_USES_RECOVERY_CHARGEMODE if you are lazy. I will hate you though. -Koush)
+else
+  recovery_initrc := $(call include-path-for, recovery)/etc/init.rc
+endif
+endif
+ifneq ($(TARGET_PREBUILT_RECOVERY_KERNEL),)
+  recovery_kernel := $(TARGET_PREBUILT_RECOVERY_KERNEL) # Use prebuilt recovery kernel
+else
+  recovery_kernel := $(INSTALLED_KERNEL_TARGET) # same as a non-recovery system
+endif
+recovery_uncompressed_ramdisk := $(PRODUCT_OUT)/ramdisk-recovery.cpio
 recovery_ramdisk := $(PRODUCT_OUT)/ramdisk-recovery.img
 recovery_build_prop := $(INSTALLED_BUILD_PROP_TARGET)
 recovery_binary := $(call intermediates-dir-for,EXECUTABLES,recovery)/recovery
 recovery_resources_common := $(call include-path-for, recovery)/res
 recovery_resources_private := $(strip $(wildcard $(TARGET_DEVICE_DIR)/recovery/res))
+recovery_root_private := $(strip $(wildcard $(TARGET_DEVICE_DIR)/recovery/root))
 recovery_resource_deps := $(shell find $(recovery_resources_common) \
-  $(recovery_resources_private) -type f)
-recovery_fstab := $(strip $(wildcard $(TARGET_DEVICE_DIR)/recovery.fstab))
-recovery_mmc_fstab := $(strip $(wildcard $(TARGET_DEVICE_DIR)/recovery_mmc.fstab))
+  $(recovery_resources_private) $(recovery_root_private) -type f)
+
+ifneq ($(TARGET_RECOVERY_FSTAB),)
+  recovery_fstab := $(strip $(wildcard $(TARGET_RECOVERY_FSTAB)))
+else
+  recovery_fstab := $(strip $(wildcard $(TARGET_DEVICE_DIR)/recovery.fstab))
+endif
 
 ifeq ($(recovery_resources_private),)
   $(info No private recovery resources for TARGET_DEVICE $(TARGET_DEVICE))
@@ -716,21 +693,16 @@ endif
 ifdef BOARD_KERNEL_BASE
   INTERNAL_RECOVERYIMAGE_ARGS += --base $(BOARD_KERNEL_BASE)
 endif
-
-BOARD_KERNEL_2KPAGESIZE := $(strip $(BOARD_KERNEL_2KPAGESIZE))
-ifdef BOARD_KERNEL_2KPAGESIZE
-  INTERNAL_2K_RECOVERYIMAGE_ARGS := $(INTERNAL_RECOVERYIMAGE_ARGS)
-  INTERNAL_2K_RECOVERYIMAGE_ARGS += --pagesize $(BOARD_KERNEL_2KPAGESIZE)
-endif
-
 BOARD_KERNEL_PAGESIZE := $(strip $(BOARD_KERNEL_PAGESIZE))
 ifdef BOARD_KERNEL_PAGESIZE
   INTERNAL_RECOVERYIMAGE_ARGS += --pagesize $(BOARD_KERNEL_PAGESIZE)
 endif
-
-INSTALLED_BOOTIMAGE_TARGET := $(PRODUCT_OUT)/boot.img
-kernel: $(INSTALLED_BOOTIMAGE_TARGET)
-.PHONY: kernel
+ifneq ($(BOARD_FORCE_RAMDISK_ADDRESS),)
+  INTERNAL_RECOVERYIMAGE_ARGS += --ramdiskaddr $(BOARD_FORCE_RAMDISK_ADDRESS)
+endif
+INTERNAL_RECOVERY_FILES := $(filter $(TARGET_RECOVERY_OUT)/%, \
+	$(foreach module, $(ALL_MODULES), $(ALL_MODULES.$(module).INSTALLED)) \
+	$(ALL_DEFAULT_INSTALLED_MODULES))
 
 # Keys authorized to sign OTA packages this build will accept.  The
 # build always uses dev-keys for this; release packaging tools will
@@ -750,50 +722,64 @@ $(RECOVERY_INSTALL_OTA_KEYS): $(OTA_PUBLIC_KEYS) $(DUMPKEY_JAR) $(extra_keys)
 	@mkdir -p $(dir $@)
 	java -jar $(DUMPKEY_JAR) $(PRIVATE_OTA_PUBLIC_KEYS) $(extra_keys) > $@
 
+TARGET_RECOVERY_ROOT_TIMESTAMP := $(TARGET_RECOVERY_OUT)/root.ts
 
-ifeq ($(BOARD_SUPPORTS_2KNAND_PAGE),true)
-define install-2knand-recovery-image
-    $(hide) $(call build-boot-image,$(INSTALLED_2K_RECOVERYIMAGE_TARGET),$(INTERNAL_2K_RECOVERYIMAGE_ARGS) --ramdisk_offset $(call get-kernel-size) $(MKBOOTIMG_COMPRESSED))
-    $(hide) $(call assert-max-image-size,$(INSTALLED_2K_RECOVERYIMAGE_TARGET),$(BOARD_RECOVERYIMAGE_PARTITION_SIZE),raw)
-endef
-endif
-
-$(INSTALLED_RECOVERYIMAGE_TARGET): $(MKBOOTFS) $(MKBOOTIMG) $(MINIGZIP) \
+$(TARGET_RECOVERY_ROOT_TIMESTAMP): $(INTERNAL_RECOVERY_FILES) \
 		$(INSTALLED_RAMDISK_TARGET) \
-		$(INSTALLED_BOOTIMAGE_TARGET) \
+		$(MKBOOTIMG) $(INTERNAL_BOOTIMAGE_FILES) \
 		$(recovery_binary) \
-		$(recovery_initrc) $(recovery_kernel) \
+		$(recovery_initrc) \
 		$(INSTALLED_2NDBOOTLOADER_TARGET) \
 		$(recovery_build_prop) $(recovery_resource_deps) \
 		$(recovery_fstab) \
 		$(RECOVERY_INSTALL_OTA_KEYS)
-	@echo ----- Making recovery image ------
-	rm -rf $(TARGET_RECOVERY_OUT)
+	@echo "----- Making recovery filesystem ------"
 	mkdir -p $(TARGET_RECOVERY_OUT)
 	mkdir -p $(TARGET_RECOVERY_ROOT_OUT)
 	mkdir -p $(TARGET_RECOVERY_ROOT_OUT)/etc
 	mkdir -p $(TARGET_RECOVERY_ROOT_OUT)/tmp
-	echo Copying baseline ramdisk...
+	@echo Copying baseline ramdisk...
 	cp -R $(TARGET_ROOT_OUT) $(TARGET_RECOVERY_OUT)
 	rm $(TARGET_RECOVERY_ROOT_OUT)/init*.rc
-	echo Modifying ramdisk contents...
-	cp -f $(recovery_initrc) $(TARGET_RECOVERY_ROOT_OUT)/
+	@echo Modifying ramdisk contents...
+	cp -f $(recovery_initrc) $(TARGET_RECOVERY_ROOT_OUT)/init.rc
 	cp -f $(recovery_binary) $(TARGET_RECOVERY_ROOT_OUT)/sbin/
+	rm -f $(TARGET_RECOVERY_ROOT_OUT)/init.*.rc
+	mkdir -p $(TARGET_RECOVERY_ROOT_OUT)/system/bin
 	cp -rf $(recovery_resources_common) $(TARGET_RECOVERY_ROOT_OUT)/
 	$(foreach item,$(recovery_resources_private), \
 	  cp -rf $(item) $(TARGET_RECOVERY_ROOT_OUT)/)
+	$(foreach item,$(recovery_root_private), \
+	  cp -rf $(item) $(TARGET_RECOVERY_OUT)/)
 	$(foreach item,$(recovery_fstab), \
 	  cp -f $(item) $(TARGET_RECOVERY_ROOT_OUT)/etc/recovery.fstab)
-	$(foreach item,$(recovery_mmc_fstab), \
-	  cp -f $(item) $(TARGET_RECOVERY_ROOT_OUT)/etc/recovery_mmc.fstab)
 	cp $(RECOVERY_INSTALL_OTA_KEYS) $(TARGET_RECOVERY_ROOT_OUT)/res/keys
 	cat $(INSTALLED_DEFAULT_PROP_TARGET) $(recovery_build_prop) \
 	        > $(TARGET_RECOVERY_ROOT_OUT)/default.prop
-	$(MKBOOTFS) $(TARGET_RECOVERY_ROOT_OUT) | $(MINIGZIP) > $(recovery_ramdisk)
-	$(hide) $(call build-boot-image,$@,$(INTERNAL_RECOVERYIMAGE_ARGS) --ramdisk_offset $(call get-kernel-size) $(MKBOOTIMG_COMPRESSED))
-	$(hide) $(call install-2knand-recovery-image)
-	@echo ----- Made recovery image -------- $@
+	@echo Modifying default.prop
+	sed -i 's/ro.build.date.utc=.*/ro.build.date.utc=0/g' $(TARGET_RECOVERY_ROOT_OUT)/default.prop
+	@echo "----- Made recovery filesystem --------" $(TARGET_RECOVERY_ROOT_OUT)
+	@touch $(TARGET_RECOVERY_ROOT_TIMESTAMP)
+
+$(recovery_uncompressed_ramdisk): $(MINIGZIP) \
+    $(TARGET_RECOVERY_ROOT_TIMESTAMP)
+	@echo "----- Making uncompressed recovery ramdisk ------"
+	$(MKBOOTFS) $(TARGET_RECOVERY_ROOT_OUT) > $@
+
+$(recovery_ramdisk): $(MKBOOTFS) \
+    $(recovery_uncompressed_ramdisk)
+	@echo "----- Making recovery ramdisk ------"
+	$(MINIGZIP) < $(recovery_uncompressed_ramdisk) > $@
+
+ifndef BOARD_CUSTOM_BOOTIMG_MK
+$(INSTALLED_RECOVERYIMAGE_TARGET): $(MKBOOTIMG) \
+		$(recovery_ramdisk) \
+		$(recovery_kernel)
+	@echo "----- Making recovery image ------"
+	$(MKBOOTIMG) $(INTERNAL_RECOVERYIMAGE_ARGS) --output $@
+	@echo -e ${CL_INS}"Made recovery image: $@"${CL_RST}
 	$(hide) $(call assert-max-image-size,$@,$(BOARD_RECOVERYIMAGE_PARTITION_SIZE),raw)
+endif
 
 else
 INSTALLED_RECOVERYIMAGE_TARGET :=
@@ -802,40 +788,29 @@ endif
 .PHONY: recoveryimage
 recoveryimage: $(INSTALLED_RECOVERYIMAGE_TARGET)
 
-ifneq ($(BOARD_KERNEL_PAGESIZE),)
-mkyaffs2_extra_flags := -c $(BOARD_KERNEL_PAGESIZE)
+INSTALLED_RECOVERYZIP_TARGET := $(PRODUCT_OUT)/utilities/update.zip
+$(INSTALLED_RECOVERYZIP_TARGET): $(INSTALLED_RECOVERYIMAGE_TARGET) $(TARGET_OUT)/bin/updater $(HOST_OUT_JAVA_LIBRARIES)/signapk.jar
+	@echo -e ${CL_PFX}"----- Making recovery zip -----"${CL_RST}
+	./build/tools/device/mkrecoveryzip.sh $(PRODUCT_OUT) $(HOST_OUT_JAVA_LIBRARIES)/signapk.jar
+
+.PHONY: recoveryzip
+recoveryzip: $(INSTALLED_RECOVERYZIP_TARGET)
+
+ifneq ($(BOARD_NAND_PAGE_SIZE),)
+mkyaffs2_extra_flags := -c $(BOARD_NAND_PAGE_SIZE)
 else
 mkyaffs2_extra_flags :=
-BOARD_KERNEL_PAGESIZE := 2048
+BOARD_NAND_PAGE_SIZE := 2048
 endif
 
-ifeq ($(BOARD_HAS_8BIT_BCHECC_SUPPORT),true)
-$(shell mkdir -p $(BCHECC_OUT))
-endif
-
-# Define yaffs2 flags for 8bit BCH ECC NAND
-ifeq ($(BOARD_HAS_8BIT_BCHECC_SUPPORT),true)
-mkyaffs2_extra_bchecc_flags := $(mkyaffs2_extra_flags)
-mkyaffs2_extra_bchecc_flags += -s $(BOARD_KERNEL_BCHECC_SPARESIZE)
-endif
-
-ifeq ($(BOARD_SUPPORTS_2KNAND_PAGE),true)
-$(shell mkdir -p $(2KPAGENAND_OUT))
-endif
-
-# Define yaffs2 flags for 2K NAND
-ifeq ($(BOARD_SUPPORTS_2KNAND_PAGE),true)
-mkyaffs2_extra_2knand_flags := -c $(BOARD_KERNEL_2KPAGESIZE)
-endif
-
-ifneq ($(BOARD_KERNEL_2KSPARESIZE),)
-mkyaffs2_extra_2knand_flags += -s $(BOARD_KERNEL_2KSPARESIZE)
-endif
-
-ifneq ($(BOARD_KERNEL_SPARESIZE),)
-mkyaffs2_extra_flags += -s $(BOARD_KERNEL_SPARESIZE)
+ifneq ($(BOARD_NAND_SPARE_SIZE),)
+mkyaffs2_extra_flags += -s $(BOARD_NAND_SPARE_SIZE)
 else
-BOARD_KERNEL_SPARESIZE := 64
+BOARD_NAND_SPARE_SIZE := 64
+endif
+
+ifdef BOARD_CUSTOM_BOOTIMG_MK
+include $(BOARD_CUSTOM_BOOTIMG_MK)
 endif
 
 # -----------------------------------------------------------------
@@ -875,38 +850,12 @@ systemimage_intermediates := \
 	$(call intermediates-dir-for,PACKAGING,systemimage)
 BUILT_SYSTEMIMAGE := $(systemimage_intermediates)/system.img
 
-# Build system image for 8bit BCH ECC NAND with different spare size
-ifeq (true,$(BOARD_HAS_8BIT_BCHECC_SUPPORT))
-define build-systemimage-bchecc-target
-    @echo "Target system fs image for 8 bit BCH ECC: $(INSTALLED_BCHECC_SYSTEMIMAGE) - yaffs2"
-    $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_bchecc_flags) $(TARGET_OUT) $(INSTALLED_BCHECC_SYSTEMIMAGE)
-    $(hide) chmod a+r $(INSTALLED_BCHECC_SYSTEMIMAGE)
-endef
-endif
-
-# Build system image for 2K NAND with different page & spare size
-ifeq ($(BOARD_SUPPORTS_2KNAND_PAGE),true)
-define build-systemimage-2knand-target
-    @echo "Target system fs image for 2K NAND: $(INSTALLED_2KNAND_SYSTEMIMAGE) - yaffs2"
-    $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_2knand_flags) $(TARGET_OUT) $(INSTALLED_2KNAND_SYSTEMIMAGE)
-    $(hide) chmod a+r $(INSTALLED_2KNAND_SYSTEMIMAGE)
-endef
-endif
-
 ifeq ($(INTERNAL_USERIMAGES_USE_EXT),true)
-## generate a yaffs2 image and an ext2/3/4 image
+## generate an ext image
 # $(1): output file
 define build-systemimage-target
-    @echo "Target system fs image: $(1) - yaffs2"
-    @mkdir -p $(dir $(1))
-    $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_flags) $(TARGET_OUT) $(1)
-    $(hide) chmod a+r $(1)
-    @echo "Target system fs image: $(1) - $(INTERNAL_USERIMAGES_EXT_VARIANT)"
-    @mkdir -p $(dir $(INSTALLED_SYSTEMIMAGE))
-    $(call build-userimage-ext-target,$(TARGET_OUT),$(INSTALLED_SYSTEMIMAGE),system,$(INTERNAL_USERIMAGES_EXT_VARIANT),$(BOARD_SYSTEMIMAGE_PARTITION_SIZE))
-    $(hide) chmod a+r $(INSTALLED_SYSTEMIMAGE).$(INTERNAL_USERIMAGES_EXT_VARIANT)
-    $(hide) $(call build-systemimage-bchecc-target)
-    $(hide) $(call build-systemimage-2knand-target)
+    @echo "Target system fs image: $(1)"
+    $(call build-userimage-ext-target,$(TARGET_OUT),$(1),system,$(INTERNAL_USERIMAGES_EXT_VARIANT),$(BOARD_SYSTEMIMAGE_PARTITION_SIZE))
 endef
 
 else # INTERNAL_USERIMAGES_USE_EXT != true
@@ -917,7 +866,6 @@ define build-systemimage-target
     @echo "Target system fs image: $(1)"
     @mkdir -p $(dir $(1))
     $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_flags) $(TARGET_OUT) $(1)
-    $(hide) chmod a+r $(1)
 endef
 endif # INTERNAL_USERIMAGES_USE_EXT
 
@@ -925,9 +873,6 @@ $(BUILT_SYSTEMIMAGE): $(FULL_SYSTEMIMAGE_DEPS) $(INSTALLED_FILES_FILE)
 	$(call build-systemimage-target,$@)
 
 INSTALLED_SYSTEMIMAGE := $(PRODUCT_OUT)/system.img
-INSTALLED_BCHECC_SYSTEMIMAGE := $(BCHECC_OUT)/system.bchecc.img
-INSTALLED_2KNAND_SYSTEMIMAGE := $(2KPAGENAND_OUT)/system.2knand.img
-
 SYSTEMIMAGE_SOURCE_DIR := $(TARGET_OUT)
 
 # The system partition needs room for the recovery image as well.  We
@@ -937,7 +882,11 @@ SYSTEMIMAGE_SOURCE_DIR := $(TARGET_OUT)
 # image size check calculation.
 ifneq ($(INSTALLED_RECOVERYIMAGE_TARGET),)
 intermediates := $(call intermediates-dir-for,PACKAGING,recovery_patch)
+ifndef BOARD_CUSTOM_BOOTIMG_MK
 RECOVERY_FROM_BOOT_PATCH := $(intermediates)/recovery_from_boot.p
+else
+RECOVERY_FROM_BOOT_PATCH :=
+endif
 $(RECOVERY_FROM_BOOT_PATCH): $(INSTALLED_RECOVERYIMAGE_TARGET) \
                              $(INSTALLED_BOOTIMAGE_TARGET) \
 			     $(HOST_OUT_EXECUTABLES)/imgdiff \
@@ -1023,37 +972,13 @@ boottarball-nodeps btnod: $(FS_GET_STATS) \
 INTERNAL_USERDATAIMAGE_FILES := \
 	$(filter $(TARGET_OUT_DATA)/%,$(ALL_DEFAULT_INSTALLED_MODULES))
 
-# Build system image for 8bit BCH ECC NAND with different spare size
-ifeq ($(BOARD_HAS_8BIT_BCHECC_SUPPORT),true)
-define build-userdataimage-bchecc-target
-    $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_bchecc_flags) $(TARGET_OUT_DATA) $(BUILT_USERDATAIMAGE_BCHECC_TARGET)
-    $(hide) chmod a+r $(BUILT_USERDATAIMAGE_BCHECC_TARGET)
-    $(hide) $(call assert-max-image-size,$(BUILT_USERDATAIMAGE_BCHECC_TARGET),$(BOARD_USERDATAIMAGE_PARTITION_SIZE),yaffs)
-endef
-endif
-
-# Build system image for 2K page NAND with different spare size
-ifeq ($(BOARD_SUPPORTS_2KNAND_PAGE),true)
-define build-userdataimage-2knand-target
-    $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_2knand_flags) $(TARGET_OUT_DATA) $(BUILT_USERDATAIMAGE_2KNAND_TARGET)
-    $(hide) chmod a+r $(BUILT_USERDATAIMAGE_2KNAND_TARGET)
-    $(hide) $(call assert-max-image-size,$(BUILT_USERDATAIMAGE_2KNAND_TARGET),$(BOARD_USERDATAIMAGE_PARTITION_SIZE),yaffs)
-endef
-endif
-
 ifeq ($(INTERNAL_USERIMAGES_USE_EXT),true)
 ## Generate an ext2 image
 define build-userdataimage-target
-    $(call pretty,"Target userdata fs image: $(INSTALLED_USERDATAIMAGE_TARGET) - yaffs2")
+    $(call pretty,"Target userdata fs image: $(INSTALLED_USERDATAIMAGE_TARGET)")
     @mkdir -p $(TARGET_OUT_DATA)
-    $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_flags) $(TARGET_OUT_DATA) $(INSTALLED_USERDATAIMAGE_TARGET)
-    $(hide) chmod a+r $(INSTALLED_USERDATAIMAGE_TARGET)
-    $(call pretty,"Target userdata fs image: $(INSTALLED_USERDATAIMAGE_TARGET) - $(INTERNAL_USERIMAGES_EXT_VARIANT)")
     $(call build-userimage-ext-target,$(TARGET_OUT_DATA),$(INSTALLED_USERDATAIMAGE_TARGET),data,$(INTERNAL_USERIMAGES_EXT_VARIANT),$(BOARD_USERDATAIMAGE_PARTITION_SIZE))
-    $(hide) chmod a+r $(INSTALLED_USERDATAIMAGE_TARGET).$(INTERNAL_USERIMAGES_EXT_VARIANT)
     $(hide) $(call assert-max-image-size,$(INSTALLED_USERDATAIMAGE_TARGET),$(BOARD_USERDATAIMAGE_PARTITION_SIZE),yaffs)
-    $(hide) $(call build-userdataimage-bchecc-target)
-    $(hide) $(call build-userdataimage-2knand-target)
 endef
 
 else # INTERNAL_USERIMAGES_USE_EXT != true
@@ -1063,14 +988,11 @@ define build-userdataimage-target
     $(call pretty,"Target userdata fs image: $(INSTALLED_USERDATAIMAGE_TARGET)")
     @mkdir -p $(TARGET_OUT_DATA)
     $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_flags) $(TARGET_OUT_DATA) $(INSTALLED_USERDATAIMAGE_TARGET)
-    $(hide) chmod a+r $(INSTALLED_USERDATAIMAGE_TARGET)
     $(hide) $(call assert-max-image-size,$(INSTALLED_USERDATAIMAGE_TARGET),$(BOARD_USERDATAIMAGE_PARTITION_SIZE),yaffs)
 endef
 endif # INTERNAL_USERIMAGES_USE_EXT
 
 BUILT_USERDATAIMAGE_TARGET := $(PRODUCT_OUT)/userdata.img
-BUILT_USERDATAIMAGE_BCHECC_TARGET := $(BCHECC_OUT)/userdata.bchecc.img
-BUILT_USERDATAIMAGE_2KNAND_TARGET := $(2KPAGENAND_OUT)/userdata.2knand.img
 
 # We just build this directly to the install location.
 INSTALLED_USERDATAIMAGE_TARGET := $(BUILT_USERDATAIMAGE_TARGET)
@@ -1104,136 +1026,6 @@ userdatatarball-nodeps: $(FS_GET_STATS)
 
 
 # -----------------------------------------------------------------
-# persist partition image
-INTERNAL_PERSISTIMAGE_FILES := \
-	$(filter $(TARGET_OUT_PERSIST)/%,$(ALL_DEFAULT_INSTALLED_MODULES))
-
-# Build persist image for 8bit BCH ECC NAND with different spare size
-ifeq (true,$(BOARD_HAS_8BIT_BCHECC_SUPPORT))
-define build-persistimage-bchecc-target
-    $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_bchecc_flags) $(TARGET_OUT_PERSIST) $(BUILT_PERSISTIMAGE_BCHECC_TARGET)
-    $(hide) chmod a+r $(BUILT_PERSISTIMAGE_BCHECC_TARGET)
-    $(hide) $(call assert-max-image-size,$(BUILT_PERSISTIMAGE_BCHECC_TARGET),$(BOARD_PERSISTIMAGE_PARTITION_SIZE),yaffs)
-endef
-endif
-
-# Build persist image for 2k page NAND with different spare size
-ifeq (true,$(BOARD_SUPPORTS_2KNAND_PAGE))
-define build-persistimage-2knand-target
-    $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_2knand_flags) $(TARGET_OUT_PERSIST) $(BUILT_PERSISTIMAGE_2KNAND_TARGET)
-    $(hide) chmod a+r $(BUILT_PERSISTIMAGE_2KNAND_TARGET)
-    $(hide) $(call assert-max-image-size,$(BUILT_PERSISTIMAGE_2KNAND_TARGET),$(BOARD_PERSISTIMAGE_PARTITION_SIZE),yaffs)
-endef
-endif
-
-ifeq ($(INTERNAL_USERIMAGES_USE_EXT),true)
-## Generate an ext image
-define build-persistimage-target
-    $(call pretty,"Target persist fs image: $(INSTALLED_PERSISTIMAGE_TARGET) - yaffs2")
-    @mkdir -p $(TARGET_OUT_PERSIST)
-    $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_flags) $(TARGET_OUT_PERSIST) $(INSTALLED_PERSISTIMAGE_TARGET)
-    $(hide) chmod a+r $(INSTALLED_PERSISTIMAGE_TARGET)
-    $(call pretty,"Target persist fs image: $(INSTALLED_PERSISTIMAGE_TARGET) - $(INTERNAL_USERIMAGES_EXT_VARIANT)")
-    $(call build-userimage-ext-target,$(TARGET_OUT_PERSIST),$(INSTALLED_PERSISTIMAGE_TARGET),persist,$(INTERNAL_USERIMAGES_EXT_VARIANT),$(BOARD_PERSISTIMAGE_PARTITION_SIZE))
-    $(hide) chmod a+r $(INSTALLED_PERSISTIMAGE_TARGET).$(INTERNAL_USERIMAGES_EXT_VARIANT)
-    $(hide) $(call assert-max-image-size,$(INSTALLED_PERSISTIMAGE_TARGET),$(BOARD_PERSISTIMAGE_PARTITION_SIZE),yaffs)
-    $(hide) $(call build-persistimage-bchecc-target)
-    $(hide) $(call build-persistimage-2knand-target)
-endef
-
-else # INTERNAL_USERIMAGES_USE_EXT != true
-
-## Generate a yaffs2 image
-define build-persistimage-target
-    $(call pretty,"Target persist fs image: $(INSTALLED_PERSISTIMAGE_TARGET)")
-    @mkdir -p $(TARGET_OUT_PERSIST)
-    $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_flags) $(TARGET_OUT_PERSIST) $(INSTALLED_PERSISTIMAGE_TARGET)
-    $(hide) chmod a+r $(INSTALLED_PERSISTIMAGE_TARGET)
-    $(hide) $(call assert-max-image-size,$(INSTALLED_PERSISTIMAGE_TARGET),$(BOARD_PERSISTIMAGE_PARTITION_SIZE),yaffs)
-endef
-endif # INTERNAL_USERIMAGES_USE_EXT
-
-BUILT_PERSISTIMAGE_TARGET := $(PRODUCT_OUT)/persist.img
-BUILT_PERSISTIMAGE_BCHECC_TARGET := $(BCHECC_OUT)/persist.bchecc.img
-BUILT_PERSISTIMAGE_2KNAND_TARGET := $(2KPAGENAND_OUT)/persist.2knand.img
-
-# We just build this directly to the install location.
-INSTALLED_PERSISTIMAGE_TARGET := $(BUILT_PERSISTIMAGE_TARGET)
-$(INSTALLED_PERSISTIMAGE_TARGET): $(INTERNAL_USERIMAGES_DEPS) \
-                                   $(INTERNAL_PERSISTIMAGE_FILES)
-	$(build-persistimage-target)
-
-.PHONY: persistimage-nodeps
-persistimage-nodeps: $(INTERNAL_USERIMAGES_DEPS)
-	$(build-persistimage-target)
-
-#######
-## persist partition tarball
-define build-persisttarball-target
-    $(call pretty,"Target persist fs tarball: " \
-                  "$(INSTALLED_PERSISTTARBALL_TARGET)")
-    $(MKTARBALL) $(FS_GET_STATS) \
-		$(PRODUCT_OUT) persist $(PRIVATE_PERSIST_TAR) \
-		$(INSTALLED_PERSISTTARBALL_TARGET)
-endef
-
-persist_tar := $(PRODUCT_OUT)/persist.tar
-INSTALLED_PERSISTTARBALL_TARGET := $(persist_tar).bz2
-$(INSTALLED_PERSISTTARBALL_TARGET): PRIVATE_PERSIST_TAR := $(persist_tar)
-$(INSTALLED_PERSISTTARBALL_TARGET): $(FS_GET_STATS) $(INTERNAL_PERSISTIMAGE_FILES)
-	$(build-persisttarball-target)
-
-.PHONY: persisttarball-nodeps
-persisttarball-nodeps: $(FS_GET_STATS)
-	$(build-persisttarball-target)
-
-# -----------------------------------------------------------------
-# cache partition image
-
-ifeq ($(INTERNAL_USERIMAGES_USE_EXT),true)
-## Generate an ext image
-define build-cacheimage-target
-    @mkdir -p $(TARGET_OUT_CACHE)
-    $(call pretty,"Target cache fs image: $(INSTALLED_CACHEIMAGE_TARGET) - $(INTERNAL_USERIMAGES_EXT_VARIANT)")
-    $(call build-userimage-ext-target,$(TARGET_OUT_CACHE),$(INSTALLED_CACHEIMAGE_TARGET),cache,$(INTERNAL_USERIMAGES_EXT_VARIANT),$(BOARD_CACHEIMAGE_PARTITION_SIZE))
-    $(hide) chmod a+r $(INSTALLED_CACHEIMAGE_TARGET).$(INTERNAL_USERIMAGES_EXT_VARIANT)
-endef
-else
-define build-cacheimage-target
-endef
-endif # INTERNAL_USERIMAGES_USE_EXT != true
-
-BUILT_CACHEIMAGE_TARGET := $(PRODUCT_OUT)/cache.img
-
-# We just build this directly to the install location.
-INSTALLED_CACHEIMAGE_TARGET := $(BUILT_CACHEIMAGE_TARGET)
-$(INSTALLED_CACHEIMAGE_TARGET): $(INTERNAL_USERIMAGES_DEPS)
-	$(build-cacheimage-target)
-
-# -----------------------------------------------------------------
-# tombstones partition image
-
-ifeq ($(INTERNAL_USERIMAGES_USE_EXT),true)
-## Generate an ext image
-define build-tombstonesimage-target
-    @mkdir -p $(TARGET_OUT_TOMBSTONES)
-    $(call pretty,"Target tombstones fs image: $(INSTALLED_TOMBSTONESIMAGE_TARGET) - $(INTERNAL_USERIMAGES_EXT_VARIANT)")
-    $(call build-userimage-ext-target,$(TARGET_OUT_TOMBSTONES),$(INSTALLED_TOMBSTONESIMAGE_TARGET),tombstones,$(INTERNAL_USERIMAGES_EXT_VARIANT),$(BOARD_TOMBSTONESIMAGE_PARTITION_SIZE))
-    $(hide) chmod a+r $(INSTALLED_TOMBSTONESIMAGE_TARGET).$(INTERNAL_USERIMAGES_EXT_VARIANT)
-endef
-else
-define build-tombstonesimage-target
-endef
-endif # INTERNAL_USERIMAGES_USE_EXT
-
-BUILT_TOMBSTONESIMAGE_TARGET := $(PRODUCT_OUT)/tombstones.img
-
-# We just build this directly to the install location.
-INSTALLED_TOMBSTONESIMAGE_TARGET := $(BUILT_TOMBSTONESIMAGE_TARGET)
-$(INSTALLED_TOMBSTONESIMAGE_TARGET): $(INTERNAL_USERIMAGES_DEPS)
-	$(build-tombstonesimage-target)
-
-# -----------------------------------------------------------------
 # bring in the installer image generation defines if necessary
 ifeq ($(TARGET_USE_DISKINSTALLER),true)
 include bootable/diskinstaller/config.mk
@@ -1245,6 +1037,7 @@ endif
 OTATOOLS :=  $(HOST_OUT_EXECUTABLES)/minigzip \
 	  $(HOST_OUT_EXECUTABLES)/mkbootfs \
 	  $(HOST_OUT_EXECUTABLES)/mkbootimg \
+	  $(HOST_OUT_EXECUTABLES)/unpackbootimg \
 	  $(HOST_OUT_EXECUTABLES)/fs_config \
 	  $(HOST_OUT_EXECUTABLES)/mkyaffs2image \
 	  $(HOST_OUT_EXECUTABLES)/zipalign \
@@ -1295,11 +1088,6 @@ built_ota_tools := \
 	$(call intermediates-dir-for,EXECUTABLES,check_prereq)/check_prereq \
 	$(call intermediates-dir-for,EXECUTABLES,sqlite3)/sqlite3 \
 	$(call intermediates-dir-for,EXECUTABLES,updater)/updater
-
-ifneq ($(TARGET_FOTA_UPDATE_LIB),)
-built_ota_tools += $(call intermediates-dir-for,EXECUTABLES,ipth_dua)/ipth_dua
-endif
-
 $(BUILT_TARGET_FILES_PACKAGE): PRIVATE_OTA_TOOLS := $(built_ota_tools)
 
 $(BUILT_TARGET_FILES_PACKAGE): PRIVATE_RECOVERY_API_VERSION := $(RECOVERY_API_VERSION)
@@ -1319,13 +1107,8 @@ $(BUILT_TARGET_FILES_PACKAGE): \
 		$(INSTALLED_RECOVERYIMAGE_TARGET) \
 		$(INSTALLED_SYSTEMIMAGE) \
 		$(INSTALLED_USERDATAIMAGE_TARGET) \
-		$(INSTALLED_PERSISTIMAGE_TARGET) \
-		$(INSTALLED_CACHEIMAGE_TARGET) \
-		$(INSTALLED_TOMBSTONESIMAGE_TARGET) \
 		$(INSTALLED_ANDROID_INFO_TXT_TARGET) \
 		$(built_ota_tools) \
-		$(INTERNAL_OTA_PACKAGE_TARGET) \
-		$(INTERNAL_MMC_OTA_PACKAGE_TARGET) \
 		$(APKCERTS_FILE) \
 		$(HOST_OUT_EXECUTABLES)/fs_config \
 		| $(ACP)
@@ -1338,9 +1121,6 @@ $(BUILT_TARGET_FILES_PACKAGE): \
 		$(TARGET_RECOVERY_ROOT_OUT),$(zip_root)/RECOVERY/RAMDISK)
 ifdef INSTALLED_KERNEL_TARGET
 	$(hide) $(ACP) $(INSTALLED_KERNEL_TARGET) $(zip_root)/RECOVERY/kernel
-endif
-ifeq ($(TARGET_BOOTIMG_SIGNED),true)
-	$(hide) $(ACP) $(PRODUCT_PRIVATE_KEY) $(zip_root)/RECOVERY/sign-key
 endif
 ifdef INSTALLED_2NDBOOTLOADER_TARGET
 	$(hide) $(ACP) \
@@ -1355,6 +1135,7 @@ endif
 ifdef BOARD_KERNEL_PAGESIZE
 	$(hide) echo "$(BOARD_KERNEL_PAGESIZE)" > $(zip_root)/RECOVERY/pagesize
 endif
+
 	@# Components of the boot image
 	$(hide) mkdir -p $(zip_root)/BOOT
 	$(hide) $(call package_files-copy-root, \
@@ -1362,8 +1143,12 @@ endif
 ifdef INSTALLED_KERNEL_TARGET
 	$(hide) $(ACP) $(INSTALLED_KERNEL_TARGET) $(zip_root)/BOOT/kernel
 endif
-ifeq ($(TARGET_BOOTIMG_SIGNED),true)
-	$(hide) $(ACP) $(PRODUCT_PRIVATE_KEY) $(zip_root)/BOOT/sign-key
+ifdef INSTALLED_RAMDISK_TARGET
+	$(hide) $(ACP) $(INSTALLED_RAMDISK_TARGET) $(zip_root)/BOOT/ramdisk.img
+endif
+ifdef INSTALLED_BOOTLOADER_MODULE
+	$(hide) $(ACP) \
+		$(INSTALLED_BOOTLOADER_MODULE) $(zip_root)/BOOT/bootloader
 endif
 ifdef INSTALLED_2NDBOOTLOADER_TARGET
 	$(hide) $(ACP) \
@@ -1372,15 +1157,17 @@ endif
 ifdef BOARD_KERNEL_CMDLINE
 	$(hide) echo "$(BOARD_KERNEL_CMDLINE)" > $(zip_root)/BOOT/cmdline
 endif
-	$(hide) echo "$(call get-kernel-size)" > $(zip_root)/BOOT/kernel_size
-ifneq ($(TARGET_USES_UNCOMPRESSED_KERNEL),true)
-	$(hide) echo 1 > $(zip_root)/BOOT/compressed_kernel
-endif
 ifdef BOARD_KERNEL_BASE
 	$(hide) echo "$(BOARD_KERNEL_BASE)" > $(zip_root)/BOOT/base
 endif
 ifdef BOARD_KERNEL_PAGESIZE
 	$(hide) echo "$(BOARD_KERNEL_PAGESIZE)" > $(zip_root)/BOOT/pagesize
+endif
+ifdef BOARD_FORCE_RAMDISK_ADDRESS
+	$(hide) echo "$(BOARD_FORCE_RAMDISK_ADDRESS)" > $(zip_root)/BOOT/ramdiskaddr
+endif
+ifdef ZIP_SAVE_UBOOTIMG_ARGS
+	$(hide) echo "$(ZIP_SAVE_UBOOTIMG_ARGS)" > $(zip_root)/BOOT/ubootargs
 endif
 	$(hide) $(foreach t,$(INSTALLED_RADIOIMAGE_TARGET),\
 	            mkdir -p $(zip_root)/RADIO; \
@@ -1391,9 +1178,6 @@ endif
 	@# Contents of the data image
 	$(hide) $(call package_files-copy-root, \
 		$(TARGET_OUT_DATA),$(zip_root)/DATA)
-	@# Contents of the persist image
-	$(hide) $(call package_files-copy-root, \
-		$(TARGET_OUT_PERSIST),$(zip_root)/PERSIST)
 	@# Extra contents of the OTA package
 	$(hide) mkdir -p $(zip_root)/OTA/bin
 	$(hide) $(ACP) $(INSTALLED_ANDROID_INFO_TXT_TARGET) $(zip_root)/OTA/
@@ -1456,12 +1240,6 @@ ifeq ($(TARGET_BUILD_TYPE),debug)
 endif
 name := $(name)-ota-$(FILE_NAME_TAG)
 
-ifeq ($(TARGET_HAS_FOTA),true)
-  fota := 1
-else
-  fota := 0
-endif
-
 INTERNAL_OTA_PACKAGE_TARGET := $(PRODUCT_OUT)/$(name).zip
 
 $(INTERNAL_OTA_PACKAGE_TARGET): KEY_CERT_PAIR := $(DEFAULT_KEY_CERT_PAIR)
@@ -1494,39 +1272,13 @@ $(INTERNAL_OTA_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) $(OTATOOLS)
 	@echo "Package OTA: $@"
 	$(OTA_FROM_TARGET_SCRIPT) -v \
 	   -p $(HOST_OUT) \
-           -k $(KEY_CERT_PAIR) \
-           -f $(fota) \
-    	   --backup=$(backuptool) \
-           --override_device=$(override_device) \
-           $(BUILT_TARGET_FILES_PACKAGE) $@
-
-ifeq ($(INTERNAL_USERIMAGES_USE_EXT),true)
-INTERNAL_MMC_OTA_PACKAGE_TARGET := $(PRODUCT_OUT)/$(name)_mmc.zip
-else
-INTERNAL_MMC_OTA_PACKAGE_TARGET :=
-endif
-
-$(INTERNAL_MMC_OTA_PACKAGE_TARGET): KEY_CERT_PAIR := $(DEFAULT_KEY_CERT_PAIR)
-
-ifeq ($(TARGET_OTA_ASSERT_DEVICE),)
-    $(INTERNAL_MMC_OTA_PACKAGE_TARGET): override_device := auto
-else
-    $(INTERNAL_MMC_OTA_PACKAGE_TARGET): override_device := $(TARGET_OTA_ASSERT_DEVICE)
-endif
-
-$(INTERNAL_MMC_OTA_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) $(OTATOOLS)
-	@echo "Package OTA: $@"
-	$(OTA_FROM_TARGET_SCRIPT) -v \
-	   -p $(HOST_OUT) \
-           -d MMC \
-           -f $(fota) \
-           -k $(KEY_CERT_PAIR) \
-	   --backup=true \
+	   -k $(KEY_CERT_PAIR) \
+	   --backup=$(backuptool) \
 	   --override_device=$(override_device) \
-           $(BUILT_TARGET_FILES_PACKAGE) $@
+	   $(BUILT_TARGET_FILES_PACKAGE) $@
 
 .PHONY: otapackage bacon
-otapackage: $(INTERNAL_OTA_PACKAGE_TARGET) $(INTERNAL_MMC_OTA_PACKAGE_TARGET)
+otapackage: $(INTERNAL_OTA_PACKAGE_TARGET)
 bacon: otapackage
 ifneq ($(TARGET_CUSTOM_RELEASETOOL),)
 	@echo "Running custom releasetool..."
@@ -1596,7 +1348,6 @@ $(BUILT_TESTS_ZIP_PACKAGE): zip_root := $(intermediates)/$(name)
 $(BUILT_TESTS_ZIP_PACKAGE): \
 		$(BUILT_SYSTEMIMAGE) \
 		$(INSTALLED_USERDATAIMAGE_TARGET) \
-		$(INSTALLED_PERSISTIMAGE_TARGET) \
 		| $(ACP)
 	@echo "Package test files: $@"
 	$(hide) rm -rf $@ $(zip_root)
@@ -1613,9 +1364,6 @@ $(BUILT_TESTS_ZIP_PACKAGE): \
 	@# Contents of the data image
 	$(hide) $(call package_files-copy-root, \
 		$(TARGET_OUT_DATA),$(zip_root)/DATA)
-	@# Contents of the persist image
-	$(hide) $(call package_files-copy-root, \
-		$(TARGET_OUT_PERSIST),$(zip_root)/PERSIST)
 	$(hide) (cd $(zip_root) && zip -qry ../$(notdir $@) .)
 
 .PHONY: tests-zip-package
@@ -1690,8 +1438,7 @@ INTERNAL_EMULATOR_PACKAGE_FILES += \
         prebuilt/android-$(TARGET_ARCH)/kernel/kernel-qemu \
         $(INSTALLED_RAMDISK_TARGET) \
 		$(INSTALLED_SYSTEMIMAGE) \
-		$(INSTALLED_USERDATAIMAGE_TARGET) \
-		$(INSTALLED_PERSISTIMAGE_TARGET)
+		$(INSTALLED_USERDATAIMAGE_TARGET)
 
 name := $(TARGET_PRODUCT)-emulator-$(FILE_NAME_TAG)
 
@@ -1781,7 +1528,6 @@ deps := \
 	$(SYMBOLS_ZIP) \
 	$(INSTALLED_SYSTEMIMAGE) \
 	$(INSTALLED_USERDATAIMAGE_TARGET) \
-	$(INSTALLED_PERSISTIMAGE_TARGET) \
 	$(INSTALLED_RAMDISK_TARGET) \
 	$(INSTALLED_SDK_BUILD_PROP_TARGET) \
 	$(INSTALLED_BUILD_PROP_TARGET) \
